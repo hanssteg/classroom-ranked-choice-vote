@@ -5,7 +5,35 @@ vote (instant-runoff style) from a CSV of ballots and writes a markdown report
 explaining the result round by round — so students can follow exactly why an
 option won.
 
-## Requirements
+## Web page (no install)
+
+[`ranked_choice.html`](ranked_choice.html) is a single, self-contained web page
+that does the same thing in the browser. Copy it to any computer (Windows, Mac,
+Chromebook), double-click it, and choose or drag in a ballots CSV. It works
+offline, nothing is uploaded anywhere, and it shows the report on screen with
+buttons to download it as `.md` or print it.
+
+The page also accepts a two-column format, as exported by some form tools: a
+name column, then each student's options in their preferred order separated by
+semicolons (see [`examples/name_ranking_format.csv`](examples/name_ranking_format.csv)).
+If the first student's first value after the name isn't a whole number, the page
+converts the file to the standard format and tallies that; a "Download converted
+CSV" button lets you inspect the converted file. Like the standard format, it
+accepts 2–10 options. This conversion is only in the web page, not the command
+line tool.
+
+The page contains a JavaScript port of `ranked_choice.py` that produces exactly
+the same report and error messages. After changing either file, check that
+they still agree (requires [Node.js](https://nodejs.org)):
+
+```bash
+python3 check_html_parity.py
+```
+
+This compares both on every CSV in `examples/` plus thousands of randomly
+generated valid and invalid ballot files.
+
+## Requirements (command line tool)
 
 - Python 3.8 or newer (standard library only — nothing to install)
 
