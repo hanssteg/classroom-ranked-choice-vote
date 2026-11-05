@@ -77,6 +77,15 @@
   #errors h2 { font-size: 1.05rem; margin: 0 0 8px; }
   #errors ul { margin: 0; padding-left: 20px; }
   .hidden { display: none !important; }
+  .note {
+    background: #f0f5ff;
+    border: 1px solid #c9d8f5;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    font-size: .95rem;
+  }
+  button.small { padding: 3px 10px; font-size: .9rem; margin-left: 6px; }
   #report h1 { font-size: 1.5rem; margin-top: 0; }
   #report h2 { font-size: 1.25rem; margin-top: 28px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
   #report h3 { font-size: 1.05rem; margin-top: 24px; }
@@ -132,6 +141,10 @@
     <div class="toolbar no-print">
       <button type="button" id="download-button">Download results (.md)</button>
       <button type="button" class="secondary" id="print-button">Print</button>
+    </div>
+    <div id="convert-note" class="note no-print hidden">
+      This file was in the name + ranking format (options separated by semicolons) and was converted automatically.
+      <button type="button" class="secondary small" id="converted-button">Download converted CSV</button>
     </div>
     <div id="report"></div>
   </div>
@@ -622,8 +635,302 @@ const RCV = (() => {
     return { markdown: renderMarkdown(fileName, options, ballots, result) };
   }
 
-  return { tally, plural };
+  return { tally, plural, readCsv, strip, CsvError };
 })();
+</script>
+
+<!--
+  Converter for the alternative two-column format (name, semicolon-delimited
+  ranking such as "Movie Day;Pizza Party;Game Hour;Extra Recess"). Files in
+  that format are converted to the standard format before tallying.
+-->
+<script id="rankings-converter">
+/**
+ * Convert a two-column CSV (name, semicolon-delimited ranking) into:
+ * name, option 1, option 2, ..., option N   (N = 2 to 10)
+ *
+ * Ranks are 1 through N, based on each person's original option order.
+ * Option columns follow their order in the first response.
+ * Names and row order are preserved. Surrounding option whitespace is trimmed.
+ *
+ * Browser use -- no packages, build step, or server required:
+ *
+ * Load this file with an HTML script tag, then call:
+ *   await convertRankingsFile(fileInput.files[0]);
+ *
+ * Or convert CSV text without downloading:
+ *   const outputCsv = convertRankingsCsv(inputCsv);
+ *
+ * File contents are processed entirely in the browser.
+ */
+(function (global) {
+  "use strict";
+
+  // Parse CSV correctly, including quoted commas, doubled quotes and line breaks.
+  function parseCsv(text) {
+    text = text.replace(/^﻿/, ""); // Accept a UTF-8 byte-order mark.
+
+    const rows = [];
+    let row = [];
+    let field = "";
+    let inQuotes = false;
+    let afterQuote = false;
+
+    function endField() {
+      row.push(field);
+      field = "";
+      afterQuote = false;
+    }
+
+    function endRow() {
+      endField();
+      rows.push(row);
+      row = [];
+    }
+
+    for (let i = 0; i < text.length; i += 1) {
+      const character = text[i];
+
+      if (inQuotes) {
+        if (character === '"') {
+          if (text[i + 1] === '"') {
+            field += '"';
+            i += 1;
+          } else {
+            inQuotes = false;
+            afterQuote = true;
+          }
+        } else {
+          field += character;
+        }
+        continue;
+      }
+
+      if (
+        afterQuote &&
+        character !== "," &&
+        character !== "\r" &&
+        character !== "\n"
+      ) {
+        throw new Error(
+          "Invalid CSV: unexpected text after a closing quote in record " +
+            (rows.length + 1) +
+            "."
+        );
+      }
+
+      if (character === '"') {
+        if (field !== "") {
+          throw new Error(
+            "Invalid CSV: unexpected quote in record " +
+              (rows.length + 1) +
+              "."
+          );
+        }
+        inQuotes = true;
+      } else if (character === ",") {
+        endField();
+      } else if (character === "\r" || character === "\n") {
+        if (character === "\r" && text[i + 1] === "\n") {
+          i += 1;
+        }
+        endRow();
+      } else {
+        field += character;
+      }
+    }
+
+    if (inQuotes) {
+      throw new Error("Invalid CSV: a quoted field is not closed.");
+    }
+
+    if (field !== "" || row.length > 0 || afterQuote) {
+      endRow();
+    }
+
+    return rows;
+  }
+
+  function escapeCsvField(value) {
+    const text = String(value);
+
+    return /[",\r\n]/.test(text)
+      ? '"' + text.replace(/"/g, '""') + '"'
+      : text;
+  }
+
+  const MIN_OPTIONS = 2;
+  const MAX_OPTIONS = 10;
+
+  /**
+   * Return the converted CSV as a string.
+   * Input must have a header and exactly two columns: name and ranked options.
+   * Each response must contain the same 2 to 10 distinct options.
+   * A final semicolon is allowed; missing or duplicate options cause an error.
+   */
+  function convertRankingsCsv(csvText) {
+    if (typeof csvText !== "string") {
+      throw new TypeError("Pass the original CSV contents as a string.");
+    }
+
+    // Ignore empty lines, but retain the original CSV record numbers for errors.
+    const records = parseCsv(csvText)
+      .map(function (cells, index) {
+        return {
+          cells: cells,
+          number: index + 1
+        };
+      })
+      .filter(function (record) {
+        return !(
+          record.cells.length === 1 &&
+          record.cells[0].trim() === ""
+        );
+      });
+
+    if (records.length < 2) {
+      throw new Error(
+        "The CSV must contain a header and at least one response."
+      );
+    }
+
+    if (records[0].cells.length !== 2) {
+      throw new Error(
+        "Use the original two-column CSV: name and semicolon-delimited rankings."
+      );
+    }
+
+    let options = null;
+    const convertedRows = [];
+
+    for (let i = 1; i < records.length; i += 1) {
+      const record = records[i];
+      const cells = record.cells;
+      const prefix = "CSV record " + record.number + ": ";
+
+      if (cells.length !== 2) {
+        throw new Error(prefix + "expected exactly two columns.");
+      }
+
+      const rankedOptions = cells[1].split(";").map(function (option) {
+        return option.trim();
+      });
+
+      // Allow a trailing semicolon without treating it as another option.
+      if (rankedOptions[rankedOptions.length - 1] === "") {
+        rankedOptions.pop();
+      }
+
+      if (
+        rankedOptions.some(function (option) {
+          return option === "";
+        })
+      ) {
+        throw new Error(
+          prefix + "an option is empty (check for doubled semicolons)."
+        );
+      }
+
+      // The first response sets how many options there are (2 to 10).
+      if (options === null) {
+        if (
+          rankedOptions.length < MIN_OPTIONS ||
+          rankedOptions.length > MAX_OPTIONS
+        ) {
+          throw new Error(
+            prefix + "expected between " + MIN_OPTIONS + " and " + MAX_OPTIONS +
+              " options separated by semicolons, found " +
+              rankedOptions.length + "."
+          );
+        }
+      } else if (rankedOptions.length !== options.length) {
+        throw new Error(
+          prefix + "expected " + options.length +
+            " options separated by semicolons (like the first response), found " +
+            rankedOptions.length + "."
+        );
+      }
+
+      if (new Set(rankedOptions).size !== rankedOptions.length) {
+        throw new Error(prefix + "an option appears more than once.");
+      }
+
+      if (options === null) {
+        options = rankedOptions.slice();
+        convertedRows.push([records[0].cells[0]].concat(options));
+      } else if (
+        rankedOptions.some(function (option) {
+          return options.indexOf(option) === -1;
+        })
+      ) {
+        throw new Error(
+          prefix + "the options do not match the first response."
+        );
+      }
+
+      convertedRows.push(
+        [cells[0]].concat(
+          options.map(function (option) {
+            return rankedOptions.indexOf(option) + 1;
+          })
+        )
+      );
+    }
+
+    return (
+      convertedRows
+        .map(function (row) {
+          return row.map(escapeCsvField).join(",");
+        })
+        .join("\r\n") + "\r\n"
+    );
+  }
+
+  /**
+   * Read a File selected in an HTML file input, convert it, and download the CSV.
+   * Optional second argument: a custom output filename.
+   * Returns the converted CSV string as well.
+   */
+  async function convertRankingsFile(file, outputName) {
+    if (!file || typeof file.text !== "function") {
+      throw new TypeError("Select a CSV file first.");
+    }
+
+    const csv = convertRankingsCsv(await file.text());
+
+    const filename =
+      outputName ||
+      (file.name || "rankings.csv").replace(/\.csv$/i, "") + "_ranked.csv";
+
+    const blob = new Blob([csv], {
+      type: "text/csv;charset=utf-8"
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = filename;
+    link.hidden = true;
+
+    try {
+      document.body.appendChild(link);
+      link.click();
+    } finally {
+      link.remove();
+
+      // Give the browser time to start the download before releasing its data.
+      setTimeout(function () {
+        URL.revokeObjectURL(url);
+      }, 60000);
+    }
+
+    return csv;
+  }
+
+  global.convertRankingsCsv = convertRankingsCsv;
+  global.convertRankingsFile = convertRankingsFile;
+})(globalThis);
 </script>
 
 <script>
@@ -640,6 +947,8 @@ const RCV = (() => {
   const fileInput = $("file-input");
   let lastMarkdown = null;
   let lastOutputName = null;
+  let lastConverted = null;
+  let lastConvertedName = null;
 
   function escapeHtml(text) {
     return text.replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -737,15 +1046,51 @@ const RCV = (() => {
       showErrors("The file could not be read.", [`${file.name} could not be read: ${exc.message}`]);
       return;
     }
+
+    // Files in the two-column "name, A;B;C;D" format are converted first.
+    let convertedCsv = null;
+    const format = detectFormat(bytes);
+    if (format.convert) {
+      try {
+        convertedCsv = convertRankingsCsv(format.text);
+        bytes = new TextEncoder().encode(convertedCsv);
+      } catch (exc) {
+        if (format.twoColumns) {
+          showErrors("Could not convert this file from the name + ranking format:", [exc.message]);
+          return;
+        }
+        // Not really the two-column format: validate it as a standard file instead.
+      }
+    }
+
     const result = RCV.tally(file.name, bytes);
     if (result.errors) {
-      showErrors(
-        `Invalid ballot CSV — ${RCV.plural(result.errors.length, "problem")} found:`,
-        result.errors
-      );
+      const title = convertedCsv
+        ? `The file was converted from the name + ranking format, but the result is invalid — ${RCV.plural(result.errors.length, "problem")} found:`
+        : `Invalid ballot CSV — ${RCV.plural(result.errors.length, "problem")} found:`;
+      showErrors(title, result.errors);
     } else {
-      showReport(result.markdown, file.name.slice(0, dot) + ".md");
+      const base = file.name.slice(0, dot);
+      showReport(result.markdown, base + ".md");
+      lastConverted = convertedCsv;
+      lastConvertedName = base + "_ranked.csv";
+      $("convert-note").classList.toggle("hidden", !convertedCsv);
     }
+  }
+
+  // Decide whether a file needs converting: it does when the cell in the
+  // first non-header row, first non-name column is not a whole number.
+  function detectFormat(bytes) {
+    let text, rows;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      rows = RCV.readCsv(text).filter((cells) => cells.some((cell) => RCV.strip(cell) !== ""));
+    } catch (exc) {
+      return { convert: false }; // the standard validation reports the problem
+    }
+    if (rows.length < 2 || rows[1].length < 2) return { convert: false };
+    const convert = !/^-?[0-9]+$/.test(RCV.strip(rows[1][1]));
+    return { convert, text, twoColumns: rows[0].length === 2 };
   }
 
   dropZone.addEventListener("click", () => fileInput.click());
@@ -776,6 +1121,9 @@ const RCV = (() => {
     if (lastMarkdown) downloadText(lastMarkdown, lastOutputName, "text/markdown;charset=utf-8");
   });
   $("print-button").addEventListener("click", () => window.print());
+  $("converted-button").addEventListener("click", () => {
+    if (lastConverted) downloadText(lastConverted, lastConvertedName, "text/csv;charset=utf-8");
+  });
   $("example-button").addEventListener("click", () => {
     downloadText(EXAMPLE_CSV, "class_vote.csv", "text/csv;charset=utf-8");
   });
