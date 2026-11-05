@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Classroom Ranked Choice Vote</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1d2330;
+    --muted: #5d6677;
+    --border: #d9dde5;
+    --accent: #2f6fdf;
+    --accent-dark: #2459b8;
+    --error-bg: #fff1f0;
+    --error-border: #f1b8b3;
+    --error-text: #8a1f17;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1.app-title { font-size: 1.7rem; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  #drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 32px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop-zone:hover, #drop-zone.dragging, #drop-zone:focus-visible {
+    border-color: var(--accent);
+    background: #f0f5ff;
+    outline: none;
+  }
+  #drop-zone strong { color: var(--accent); }
+  #drop-zone .hint { color: var(--muted); font-size: .9rem; margin-top: 6px; }
+  #file-input { display: none; }
+  button, .button {
+    font: inherit;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    border-radius: 8px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: #fff; color: var(--accent); }
+  button.secondary:hover { background: #f0f5ff; }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .help-row { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  details { margin-top: 16px; color: var(--muted); }
+  details summary { cursor: pointer; color: var(--text); }
+  #errors {
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    color: var(--error-text);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+  }
+  #errors h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  #errors ul { margin: 0; padding-left: 20px; }
+  .hidden { display: none !important; }
+  #report h1 { font-size: 1.5rem; margin-top: 0; }
+  #report h2 { font-size: 1.25rem; margin-top: 28px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  #report h3 { font-size: 1.05rem; margin-top: 24px; }
+  #report table { border-collapse: collapse; margin: 8px 0 12px; }
+  #report th, #report td { border: 1px solid var(--border); padding: 4px 12px; text-align: left; }
+  #report th { background: #f0f2f6; }
+  #report td:last-child { font-variant-numeric: tabular-nums; }
+  #report code { background: #f0f2f6; padding: 1px 5px; border-radius: 4px; }
+  table.format { border-collapse: collapse; margin: 8px 0; color: var(--text); }
+  table.format th, table.format td { border: 1px solid var(--border); padding: 2px 10px; }
+  @media print {
+    body { background: #fff; }
+    main { padding: 0; max-width: none; }
+    .no-print { display: none !important; }
+    .card { border: none; padding: 0; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="no-print">
+    <h1 class="app-title">Classroom Ranked Choice Vote</h1>
+    <p class="subtitle">Tally a ranked choice (instant-runoff) vote from a CSV of ballots. Everything runs in this page — no data leaves your computer.</p>
+
+    <div class="card">
+      <div id="drop-zone" tabindex="0" role="button" aria-label="Choose a ballots CSV file">
+        <div><strong>Choose a ballots CSV file</strong> or drag it here</div>
+        <div class="hint" id="file-label">No file chosen</div>
+      </div>
+      <input type="file" id="file-input" accept=".csv,text/csv">
+      <div class="help-row">
+        <button type="button" class="secondary" id="example-button">Download example CSV</button>
+      </div>
+      <details>
+        <summary>CSV format</summary>
+        <p>The first row starts with <code>Name</code>, followed by one column per option (2–10 options). Each other row is one student: their name, then a rank for every option, where <code>1</code> is their top choice. Each student must use each number from 1 to the number of options exactly once. Up to 100 students.</p>
+        <table class="format">
+          <tr><th>Name</th><th>Pizza Party</th><th>Movie Day</th><th>Extra Recess</th></tr>
+          <tr><td>Ava</td><td>1</td><td>2</td><td>3</td></tr>
+          <tr><td>Ben</td><td>2</td><td>1</td><td>3</td></tr>
+        </table>
+        <p>You can make this in Excel or Google Sheets and save/download it as CSV.</p>
+      </details>
+    </div>
+  </div>
+
+  <div id="errors" class="hidden" role="alert">
+    <h2 id="errors-title"></h2>
+    <ul id="errors-list"></ul>
+  </div>
+
+  <div id="results" class="card hidden">
+    <div class="toolbar no-print">
+      <button type="button" id="download-button">Download results (.md)</button>
+      <button type="button" class="secondary" id="print-button">Print</button>
+    </div>
+    <div id="report"></div>
+  </div>
+</main>
+
+<!--
+  Tally logic: a line-for-line port of ranked_choice.py. It must produce
+  byte-identical markdown and identical error messages; check_html_parity.py
+  verifies this. This block must not touch the page (the parity check runs it
+  in Node).
+-->
+<script id="rcv-core">
+const RCV = (() => {
+  "use strict";
+
+  const MIN_OPTIONS = 2;
+  const MAX_OPTIONS = 10;
+  const MAX_STUDENTS = 100;
+  const FIELD_LIMIT = 131072; // Python csv module default field size limit
+
+  const ORDINAL_WORDS = [
+    "first", "second", "third", "fourth", "fifth",
+    "sixth", "seventh", "eighth", "ninth", "tenth",
+  ];
+
+  const INT_RE = /^-?[0-9]+$/;
+
+  // Python's str.strip() whitespace set (differs slightly from JS trim()).
+  const WS = String.raw`\t\n\v\f\r\x1c-\x1f \x85\xa0  -     　`;
+  const STRIP_RE = new RegExp(`^[${WS}]+|[${WS}]+$`, "g");
+  const RSTRIP_RE = new RegExp(`[${WS}]+$`);
+  const strip = (s) => s.replace(STRIP_RE, "");
+  const rstrip = (s) => s.replace(RSTRIP_RE, "");
+
+  const ordinalWord = (rank) => ORDINAL_WORDS[rank - 1];
+
+  function placeLabel(place) {
+    const suffix = { 1: "st", 2: "nd", 3: "rd" }[place] || "th";
+    return `${place}${suffix}`;
+  }
+
+  const plural = (count, word) => `${count} ${word}` + (count === 1 ? "" : "s");
+
+  function joinNames(names) {
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return names.slice(0, -1).join(", ") + `, and ${names[names.length - 1]}`;
+  }
+
+  const mdCell = (text) => text.split("|").join("\\|");
+
+  // ---- CSV reading: mirrors Python's csv.reader (excel dialect) ----------
+
+  class CsvError extends Error {}
+
+  // Split like a text file opened with newline="": lines end after \n, \r\n
+  // or a lone \r, and keep their line endings.
+  function splitLines(text) {
+    const lines = [];
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        lines.push(text.slice(start, i + 1));
+        start = i + 1;
+      }
+    }
+    if (start < text.length) lines.push(text.slice(start));
+    return lines;
+  }
+
+  const START_RECORD = 0, START_FIELD = 1, IN_FIELD = 2, IN_QUOTED_FIELD = 3,
+    QUOTE_IN_QUOTED_FIELD = 4, EAT_CRNL = 5;
+  const EOL = null;
+
+  function readCsv(text) {
+    const rows = [];
+    const lines = splitLines(text);
+    let lineIndex = 0;
+    let fields, field, fieldLen, state;
+
+    const save = () => { fields.push(field); field = ""; fieldLen = 0; };
+    const add = (c) => {
+      if (fieldLen >= FIELD_LIMIT) {
+        throw new CsvError(`field larger than field limit (${FIELD_LIMIT})`);
+      }
+      field += c;
+      fieldLen++;
+    };
+    const isNewline = (c) => c === "\n" || c === "\r";
+    const endField = (c) => {
+      save();
+      state = c === EOL ? START_RECORD : EAT_CRNL;
+    };
+
+    function processChar(c) {
+      switch (state) {
+        case START_RECORD:
+          if (c === EOL) return;
+          if (isNewline(c)) { state = EAT_CRNL; return; }
+          state = START_FIELD;
+          // falls through
+        case START_FIELD:
+          if (c === EOL || isNewline(c)) endField(c);
+          else if (c === '"') state = IN_QUOTED_FIELD;
+          else if (c === ",") save();
+          else { add(c); state = IN_FIELD; }
+          return;
+        case IN_FIELD:
+          if (c === EOL || isNewline(c)) endField(c);
+          else if (c === ",") { save(); state = START_FIELD; }
+          else add(c);
+          return;
+        case IN_QUOTED_FIELD:
+          if (c === EOL) return;
+          if (c === '"') state = QUOTE_IN_QUOTED_FIELD;
+          else add(c);
+          return;
+        case QUOTE_IN_QUOTED_FIELD:
+          if (c === '"') { add(c); state = IN_QUOTED_FIELD; }
+          else if (c === ",") { save(); state = START_FIELD; }
+          else if (c === EOL || isNewline(c)) endField(c);
+          else { add(c); state = IN_FIELD; }
+          return;
+        case EAT_CRNL:
+          if (isNewline(c)) return;
+          if (c === EOL) { state = START_RECORD; return; }
+          throw new CsvError(
+            "new-line character seen in unquoted field - do you need to open the file with newline=''?"
+          );
+      }
+    }
+
+    for (;;) {
+      fields = []; field = ""; fieldLen = 0; state = START_RECORD;
+      do {
+        if (lineIndex >= lines.length) {
+          if (fieldLen !== 0 || state === IN_QUOTED_FIELD) {
+            save();
+            break;
+          }
+          return rows;
+        }
+        for (const c of lines[lineIndex++]) processChar(c); // by code point
+        processChar(EOL);
+      } while (state !== START_RECORD);
+      rows.push(fields);
+    }
+  }
+
+  // ---- Parsing and validation ---------------------------------------------
+
+  function parseElection(fileName, bytes) {
+    const errors = [];
+    let text, rawRows;
+    try {
+      // fatal: reject invalid UTF-8; a leading BOM is stripped (like utf-8-sig).
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (exc) {
+      return [[], [], [`${fileName} is not valid UTF-8 text.`]];
+    }
+    try {
+      rawRows = readCsv(text);
+    } catch (exc) {
+      if (exc instanceof CsvError) {
+        return [[], [], [`${fileName} could not be parsed as CSV: ${exc.message}`]];
+      }
+      throw exc;
+    }
+
+    // Keep original row numbers; ignore rows that are entirely blank.
+    const rows = [];
+    rawRows.forEach((cells, index) => {
+      if (cells.some((cell) => strip(cell) !== "")) rows.push([index + 1, cells]);
+    });
+    if (rows.length === 0) return [[], [], ["The CSV file is empty."]];
+
+    const header = rows[0][1];
+    const first = strip(header[0]);
+    if (first !== "Name") {
+      errors.push(`Header: the first column must be "Name", found "${first}".`);
+    }
+    const options = header.slice(1).map(strip);
+    if (!(MIN_OPTIONS <= options.length && options.length <= MAX_OPTIONS)) {
+      errors.push(
+        `Header: there must be between ${MIN_OPTIONS} and ${MAX_OPTIONS} ` +
+        `option columns, found ${options.length}.`
+      );
+    }
+    const seen = new Map();
+    options.forEach((option, index) => {
+      const column = index + 2;
+      if (!option) {
+        errors.push(`Header: column ${column} has an empty option name.`);
+      } else if (seen.has(option)) {
+        errors.push(
+          `Header: duplicate option name "${option}" ` +
+          `(columns ${seen.get(option)} and ${column}).`
+        );
+      } else {
+        seen.set(option, column);
+      }
+    });
+
+    const studentRows = rows.slice(1);
+    if (studentRows.length === 0) {
+      errors.push("No student rows found (at least 1 is required).");
+    } else if (studentRows.length > MAX_STUDENTS) {
+      errors.push(
+        `Too many student rows: found ${studentRows.length}, ` +
+        `the maximum is ${MAX_STUDENTS}.`
+      );
+    }
+
+    const n = options.length;
+    const ballots = [];
+    for (const [rowNumber, cells] of studentRows) {
+      const name = strip(cells[0]);
+      const label = `Row ${rowNumber}` + (name ? ` ("${name}")` : "");
+      if (!name) errors.push(`Row ${rowNumber}: missing student name.`);
+      if (cells.length - 1 !== n) {
+        errors.push(
+          `${label}: expected ${n} rank values after the name, ` +
+          `found ${cells.length - 1}.`
+        );
+        continue;
+      }
+      const values = []; // BigInt, like Python's unbounded int
+      let rowOk = true;
+      cells.slice(1).forEach((cell, index) => {
+        const option = options[index];
+        const text = strip(cell);
+        if (!text) {
+          errors.push(`${label}: empty rank value for option "${option}".`);
+          rowOk = false;
+        } else if (!INT_RE.test(text)) {
+          errors.push(`${label}: value "${text}" for option "${option}" is not a whole number.`);
+          rowOk = false;
+        } else {
+          values.push(BigInt(text));
+        }
+      });
+      if (!rowOk) continue;
+      const sorted = [...values].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      if (!sorted.every((value, index) => value === BigInt(index + 1))) {
+        const got = values.map(String).join(", ");
+        errors.push(
+          `${label}: ranks must use each number from 1 to ${n} ` +
+          `exactly once (got ${got}).`
+        );
+        continue;
+      }
+      if (!name) continue;
+      const rankOf = new Map(options.map((option, index) => [option, Number(values[index])]));
+      const choices = [...options].sort((a, b) => rankOf.get(a) - rankOf.get(b));
+      ballots.push({ name, rowNumber, choices, rankOf });
+    }
+
+    return [options, ballots, errors];
+  }
+
+  // ---- Counting -----------------------------------------------------------
+
+  function currentChoice(ballot, eliminated) {
+    for (const option of ballot.choices) {
+      if (!eliminated.has(option)) return option;
+    }
+    throw new Error("A ballot ran out of options; impossible with full rankings.");
+  }
+
+  function rankCount(option, rank, ballots) {
+    return ballots.filter((ballot) => ballot.rankOf.get(option) === rank).length;
+  }
+
+  function breakTie(tied, votes, ballots, totalRanks, findWinner) {
+    const lines = [`${joinNames(tied)} are tied with ${plural(votes, "vote")} each.`];
+    let candidates = [...tied];
+    for (let rank = 2; rank <= totalRanks; rank++) {
+      const atRank = new Map(candidates.map((option) => [option, rankCount(option, rank, ballots)]));
+      const counts = [...atRank.values()];
+      const best = findWinner ? Math.max(...counts) : Math.min(...counts);
+      const narrowed = candidates.filter((option) => atRank.get(option) === best);
+      const detail = candidates.map((option) => `${option} has ${atRank.get(option)}`).join(", ");
+      const prefix = `Comparing ${ordinalWord(rank)}-choice votes: ${detail}`;
+      if (narrowed.length === 1) {
+        const pick = narrowed[0];
+        const verdict = findWinner ? `${pick} wins the tie.` : `${pick} is eliminated.`;
+        lines.push(`${prefix} — ${verdict}`);
+        return [pick, lines];
+      }
+      if (narrowed.length !== candidates.length) {
+        lines.push(`${prefix} — still tied between ${joinNames(narrowed)}.`);
+      } else {
+        lines.push(`${prefix} — still tied.`);
+      }
+      candidates = narrowed;
+    }
+    let pick;
+    if (findWinner) {
+      pick = candidates[0];
+      lines.push(
+        `Still tied after comparing every rank; ${pick} wins the tie ` +
+        `because it comes earlier in the ballot column order.`
+      );
+    } else {
+      pick = candidates[candidates.length - 1];
+      lines.push(
+        `Still tied after comparing every rank; ${pick} is eliminated ` +
+        `because it comes later in the ballot column order.`
+      );
+    }
+    return [pick, lines];
+  }
+
+  function runVote(options, ballots) {
+    let eliminated = new Set();
+    const bottomUp = []; // options locked in so far, last place first
+    const rounds = [];
+    let number = 0;
+    for (;;) {
+      number++;
+      const active = options.filter((option) => !eliminated.has(option));
+      const counts = new Map(active.map((option) => [option, 0]));
+      for (const ballot of ballots) {
+        const choice = currentChoice(ballot, eliminated);
+        counts.set(choice, counts.get(choice) + 1);
+      }
+
+      if (active.length === 2) {
+        const top = Math.max(...counts.values());
+        const leaders = active.filter((option) => counts.get(option) === top);
+        let winner, tieLines;
+        if (leaders.length === 1) {
+          [winner, tieLines] = [leaders[0], []];
+        } else {
+          [winner, tieLines] = breakTie(leaders, top, ballots, options.length, true);
+        }
+        const runnerUp = active.find((option) => option !== winner);
+        rounds.push({ number, counts, tieLines, eliminated: null, winner, runnerUp, moves: [] });
+        const ranking = [winner, runnerUp, ...[...bottomUp].reverse()];
+        return { ranking, rounds };
+      }
+
+      const fewest = Math.min(...counts.values());
+      const trailing = active.filter((option) => counts.get(option) === fewest);
+      let loser, tieLines;
+      if (trailing.length === 1) {
+        [loser, tieLines] = [trailing[0], []];
+      } else {
+        [loser, tieLines] = breakTie(trailing, fewest, ballots, options.length, false);
+      }
+      const after = new Set([...eliminated, loser]);
+      const moves = [];
+      for (const ballot of ballots) { // CSV row order keeps this deterministic
+        if (currentChoice(ballot, eliminated) === loser) {
+          const toOption = currentChoice(ballot, after);
+          moves.push({
+            student: ballot.name,
+            fromOption: loser,
+            fromRank: ballot.rankOf.get(loser),
+            toOption,
+            toRank: ballot.rankOf.get(toOption),
+          });
+        }
+      }
+      rounds.push({
+        number, counts, tieLines,
+        eliminated: loser,
+        eliminatedPlace: active.length,
+        moves,
+      });
+      eliminated = after;
+      bottomUp.push(loser);
+    }
+  }
+
+  // ---- Report -------------------------------------------------------------
+
+  function renderMarkdown(sourceName, options, ballots, result) {
+    const columnOrder = new Map(options.map((option, index) => [option, index]));
+    const total = ballots.length;
+    const lines = [];
+    const out = (line) => lines.push(line);
+
+    out("# Ranked Choice Vote Results");
+    out("");
+    out(
+      `Source ballots: \`${sourceName}\` — ${plural(total, "student")} ` +
+      `ranking ${plural(options.length, "option")}.`
+    );
+    out("");
+    out("## Final Standings");
+    out("");
+    out("| Place | Option |");
+    out("| --- | --- |");
+    result.ranking.forEach((option, index) => {
+      out(`| ${placeLabel(index + 1)} | ${mdCell(option)} |`);
+    });
+    out("");
+    out("## Round-by-Round Explanation");
+    out("");
+    out(
+      "Each round, every ballot counts toward the voter's highest-ranked option " +
+      "still in the running. The option with the fewest votes is eliminated and " +
+      "locked into the lowest open place, and each ballot counting toward it moves " +
+      "to that voter's next choice still in the running. When only two options " +
+      "remain, the one with more votes wins."
+    );
+    out("");
+    for (const round of result.rounds) {
+      const isFinal = round.eliminated === null;
+      out(`### Round ${round.number}` + (isFinal ? " (Final)" : ""));
+      out("");
+      out(`Vote totals this round (${plural(total, "ballot")}):`);
+      out("");
+      out("| Option | Votes |");
+      out("| --- | --- |");
+      const active = [...round.counts.keys()];
+      const ordered = [...active].sort(
+        (a, b) => (round.counts.get(b) - round.counts.get(a)) || (columnOrder.get(a) - columnOrder.get(b))
+      );
+      for (const option of ordered) {
+        out(`| ${mdCell(option)} | ${round.counts.get(option)} |`);
+      }
+      out("");
+      if (round.tieLines.length) {
+        const tieTitle = isFinal ? "Tie for first place" : "Tie for last place";
+        out(`**${tieTitle}**, broken deterministically:`);
+        out("");
+        for (const line of round.tieLines) out(`- ${line}`);
+        out("");
+      }
+      if (isFinal) {
+        out(
+          `**Winner:** ${round.winner} ` +
+          `(${plural(round.counts.get(round.winner), "vote")}) — **1st place**.`
+        );
+        out("");
+        out(
+          `**Second place:** ${round.runnerUp} ` +
+          `(${plural(round.counts.get(round.runnerUp), "vote")}).`
+        );
+        out("");
+      } else {
+        const loser = round.eliminated;
+        out(
+          `**Last place:** ${loser} (${plural(round.counts.get(loser), "vote")}) — ` +
+          `eliminated and locked in as **${placeLabel(round.eliminatedPlace)} place**.`
+        );
+        out("");
+        const remaining = active.filter((option) => option !== loser);
+        const movedTo = new Map(remaining.map((option) => [option, 0]));
+        for (const move of round.moves) {
+          movedTo.set(move.toOption, movedTo.get(move.toOption) + 1);
+        }
+        out(`Votes moved from ${loser} to each remaining option:`);
+        out("");
+        out("| Moved to | Votes |");
+        out("| --- | --- |");
+        for (const option of remaining) {
+          out(`| ${mdCell(option)} | ${movedTo.get(option)} |`);
+        }
+        out("");
+        if (round.moves.length) {
+          for (const move of round.moves) {
+            out(
+              `- ${move.student}'s vote moved from ` +
+              `${ordinalWord(move.fromRank)} choice ${move.fromOption} to ` +
+              `${ordinalWord(move.toRank)} choice ${move.toOption}.`
+            );
+          }
+          out("");
+        } else {
+          out(`No ballots had ${loser} as their current choice, so no votes moved.`);
+          out("");
+        }
+      }
+    }
+    return rstrip(lines.join("\n")) + "\n";
+  }
+
+  // Tally a CSV file's bytes. Returns {errors: [...]} or {markdown}.
+  function tally(fileName, bytes) {
+    const [options, ballots, errors] = parseElection(fileName, bytes);
+    if (errors.length) return { errors };
+    const result = runVote(options, ballots);
+    return { markdown: renderMarkdown(fileName, options, ballots, result) };
+  }
+
+  return { tally, plural };
+})();
+</script>
+
+<script>
+(() => {
+  "use strict";
+
+  const EXAMPLE_CSV =
+    "Name,Pizza Party,Movie Day,Extra Recess,Game Hour\n" +
+    "Ava,1,2,3,4\nBen,1,3,2,4\nCora,2,1,3,4\nDev,4,3,1,2\n" +
+    "Eli,3,4,2,1\nFay,3,2,4,1\nGus,4,1,2,3\nHana,1,3,4,2\n";
+
+  const $ = (id) => document.getElementById(id);
+  const dropZone = $("drop-zone");
+  const fileInput = $("file-input");
+  let lastMarkdown = null;
+  let lastOutputName = null;
+
+  function escapeHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function inline(text) {
+    return escapeHtml(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  }
+
+  // Minimal renderer for the markdown subset the report uses.
+  function markdownToHtml(markdown) {
+    const lines = markdown.split("\n");
+    const html = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const heading = /^(#{1,3}) (.*)$/.exec(line);
+      if (heading) {
+        const level = heading[1].length;
+        html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+        i++;
+      } else if (line.startsWith("| ")) {
+        const rows = [];
+        while (i < lines.length && lines[i].startsWith("| ")) rows.push(lines[i++]);
+        const cells = (row) => row.slice(2, -2).split(" | ").map((c) => inline(c.split("\\|").join("|")));
+        const head = cells(rows[0]).map((c) => `<th>${c}</th>`).join("");
+        const body = rows.slice(2).map((row) => `<tr>${cells(row).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
+        html.push(`<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`);
+      } else if (line.startsWith("- ")) {
+        const items = [];
+        while (i < lines.length && lines[i].startsWith("- ")) items.push(`<li>${inline(lines[i++].slice(2))}</li>`);
+        html.push(`<ul>${items.join("")}</ul>`);
+      } else if (line.trim() === "") {
+        i++;
+      } else {
+        const para = [];
+        while (i < lines.length && lines[i].trim() !== "" && !/^(#|\| |- )/.test(lines[i])) para.push(lines[i++]);
+        html.push(`<p>${inline(para.join(" "))}</p>`);
+      }
+    }
+    return html.join("\n");
+  }
+
+  function showErrors(title, errors) {
+    $("results").classList.add("hidden");
+    $("errors-title").textContent = title;
+    const list = $("errors-list");
+    list.replaceChildren(...errors.map((error) => {
+      const li = document.createElement("li");
+      li.textContent = error;
+      return li;
+    }));
+    $("errors").classList.remove("hidden");
+  }
+
+  function showReport(markdown, outputName) {
+    lastMarkdown = markdown;
+    lastOutputName = outputName;
+    $("errors").classList.add("hidden");
+    $("report").innerHTML = markdownToHtml(markdown);
+    $("results").classList.remove("hidden");
+    $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function downloadText(text, fileName, type) {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function handleFile(file) {
+    if (!file) return;
+    $("file-label").textContent = file.name;
+    const dot = file.name.lastIndexOf(".");
+    const suffix = dot > 0 ? file.name.slice(dot).toLowerCase() : "";
+    if (suffix !== ".csv") {
+      showErrors("This is not a CSV file.", [
+        `Expected a .csv file, got: ${file.name}`,
+        "In Excel or Google Sheets, save or download the sheet as CSV first.",
+      ]);
+      return;
+    }
+    let bytes;
+    try {
+      bytes = new Uint8Array(await file.arrayBuffer());
+    } catch (exc) {
+      showErrors("The file could not be read.", [`${file.name} could not be read: ${exc.message}`]);
+      return;
+    }
+    const result = RCV.tally(file.name, bytes);
+    if (result.errors) {
+      showErrors(
+        `Invalid ballot CSV — ${RCV.plural(result.errors.length, "problem")} found:`,
+        result.errors
+      );
+    } else {
+      showReport(result.markdown, file.name.slice(0, dot) + ".md");
+    }
+  }
+
+  dropZone.addEventListener("click", () => fileInput.click());
+  dropZone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      fileInput.click();
+    }
+  });
+  fileInput.addEventListener("change", () => {
+    handleFile(fileInput.files[0]);
+    fileInput.value = ""; // allow re-selecting the same file after editing it
+  });
+  ["dragenter", "dragover"].forEach((type) => dropZone.addEventListener(type, (event) => {
+    event.preventDefault();
+    dropZone.classList.add("dragging");
+  }));
+  ["dragleave", "drop"].forEach((type) => dropZone.addEventListener(type, (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("dragging");
+  }));
+  dropZone.addEventListener("drop", (event) => handleFile(event.dataTransfer.files[0]));
+  // Dropping a file elsewhere on the page shouldn't navigate away from it.
+  window.addEventListener("dragover", (event) => event.preventDefault());
+  window.addEventListener("drop", (event) => event.preventDefault());
+
+  $("download-button").addEventListener("click", () => {
+    if (lastMarkdown) downloadText(lastMarkdown, lastOutputName, "text/markdown;charset=utf-8");
+  });
+  $("print-button").addEventListener("click", () => window.print());
+  $("example-button").addEventListener("click", () => {
+    downloadText(EXAMPLE_CSV, "class_vote.csv", "text/csv;charset=utf-8");
+  });
+})();
+</script>
+</body>
+</html>
